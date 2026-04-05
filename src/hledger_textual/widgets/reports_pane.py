@@ -189,6 +189,7 @@ class ReportsPane(DataTablePaneMixin, Widget):
         Binding("r", "refresh", "Refresh", show=True, priority=True),
         Binding("c", "toggle_chart", "Chart", show=False, priority=True),
         Binding("i", "toggle_investments", "Investments", show=False, priority=True),
+        Binding("S", "toggle_sort_amount", "Sort amount", show=True, priority=True),
         Binding("x", "export", "Export", show=False, priority=True),
         Binding("n", "new_custom_report", "New report", show=True, priority=True),
         Binding("e", "edit_custom_report", "Edit report", show=False, priority=True),
@@ -213,6 +214,7 @@ class ReportsPane(DataTablePaneMixin, Widget):
         self._report_data: ReportData | None = None
         self._fixed_widths: dict[int, int] = {}
         self._show_investments: bool = False
+        self._sort_amount: bool = False
         self._custom_report_name: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -368,6 +370,7 @@ class ReportsPane(DataTablePaneMixin, Widget):
                 period_begin=begin,
                 period_end=end,
                 commodity=commodity,
+                sort_amount=self._sort_amount,
                 cache=self._cache,
             )
         except HledgerError as exc:
@@ -512,6 +515,15 @@ class ReportsPane(DataTablePaneMixin, Widget):
             return
         self._show_investments = not self._show_investments
         label = "Investments shown" if self._show_investments else "Investments hidden"
+        self.notify(label, timeout=2)
+        self._load_report_data()
+
+    def action_toggle_sort_amount(self) -> None:
+        """Toggle sorting report rows by amount (hledger --sort-amount)."""
+        if self._custom_report_name is not None:
+            return
+        self._sort_amount = not self._sort_amount
+        label = "Sorted by amount" if self._sort_amount else "Sorted by account"
         self.notify(label, timeout=2)
         self._load_report_data()
 
