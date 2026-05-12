@@ -425,16 +425,16 @@ class TransactionFormScreen(FormAccountSuggestionsMixin, ModalScreen[Transaction
 
             with VerticalScroll(id="form-scroll"):
                 # Date field
-                with Horizontal(classes="form-field"):
-                    yield Label("Date:")
+                with Horizontal(classes="form-field form-field--required"):
+                    yield Label("Date:*")
                     yield DateInput(
                         value=self.transaction.date if self._has_template else date.today().isoformat(),
                         id="input-date",
                     )
 
                 # Description field
-                with Horizontal(classes="form-field"):
-                    yield Label("Description:")
+                with Horizontal(classes="form-field form-field--required"):
+                    yield Label("Description:*")
                     yield AutocompleteInput(
                         value=self.transaction.description if self._has_template else "",
                         placeholder="Transaction description",
@@ -454,7 +454,7 @@ class TransactionFormScreen(FormAccountSuggestionsMixin, ModalScreen[Transaction
                     )
 
                 # Code field
-                with Horizontal(classes="form-field"):
+                with Horizontal(classes="form-field form-field--optional"):
                     yield Label("Code:")
                     yield Input(
                         value=self.transaction.code if self._has_template else "",
@@ -463,7 +463,7 @@ class TransactionFormScreen(FormAccountSuggestionsMixin, ModalScreen[Transaction
                     )
 
                 # Comment field
-                with Horizontal(classes="form-field"):
+                with Horizontal(classes="form-field form-field--optional"):
                     yield Label("Comment:")
                     yield Input(
                         value=self.transaction.comment if self._has_template else "",
@@ -472,7 +472,7 @@ class TransactionFormScreen(FormAccountSuggestionsMixin, ModalScreen[Transaction
                     )
 
                 # Postings section
-                yield Static("Postings", id="postings-header")
+                yield Static("Postings*", id="postings-header")
                 yield Static(
                     "Amount: plain number (50.00), currency prefix (€50.00), "
                     "or commodity with cost (-5 STCK @@ €200.00 / -5 STCK @ €40.00). "
@@ -489,6 +489,8 @@ class TransactionFormScreen(FormAccountSuggestionsMixin, ModalScreen[Transaction
                 with Horizontal(id="posting-buttons"):
                     yield Button("\\[+] Add posting", id="btn-add-posting")
                     yield Button("\\[-] Remove last", id="btn-remove-posting")
+
+            yield Static("* required", classes="form-required-footer")
 
             with Horizontal(id="form-buttons"):
                 yield Button("Cancel", variant="default", id="btn-form-cancel")
