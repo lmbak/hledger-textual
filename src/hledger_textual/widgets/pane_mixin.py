@@ -40,6 +40,14 @@ class DataTablePaneMixin:
         """Move cursor up in the table."""
         self._get_main_table().action_cursor_up()
 
+    def action_cursor_left(self) -> None:
+        """Move cursor left in the table."""
+        self._get_main_table().action_cursor_left()
+
+    def action_cursor_right(self) -> None:
+        """Move cursor right in the table."""
+        self._get_main_table().action_cursor_right()
+
     def get_export_data(self):
         """Return an :class:`ExportData` for the currently visible table data.
 

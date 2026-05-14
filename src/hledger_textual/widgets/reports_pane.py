@@ -200,6 +200,8 @@ class ReportsPane(DataTablePaneMixin, Widget):
         Binding("escape", "back_to_builtin", "Back", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
+        Binding("h", "cursor_left", "Left", show=False),
+        Binding("l", "cursor_right", "Right", show=False),
     ]
 
     def __init__(self, journal_file: Path, cache: HledgerCache | None = None, **kwargs) -> None:
