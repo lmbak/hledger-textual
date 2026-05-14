@@ -171,6 +171,58 @@ class TestReportsPaneReload:
             assert call_count > initial_count
 
 
+class TestReportsPaneVimNavigation:
+    """Tests for h/j/k/l vim-style cursor navigation in ReportsPane."""
+
+    async def test_l_key_moves_cursor_right(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """Pressing 'l' advances the cell cursor to the next column."""
+        from hledger_textual.hledger import _parse_report_csv
+
+        data = _parse_report_csv(_SAMPLE_IS_CSV)
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: data,
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            table = app.query_one("#reports-table", DataTable)
+            table.move_cursor(row=1, column=0)
+            await pilot.pause()
+            assert table.cursor_column == 0
+
+            app.query_one(ReportsPane).focus()
+            await pilot.press("l")
+            await pilot.pause()
+            assert table.cursor_column == 1
+
+    async def test_h_key_moves_cursor_left(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """Pressing 'h' moves the cell cursor back one column."""
+        from hledger_textual.hledger import _parse_report_csv
+
+        data = _parse_report_csv(_SAMPLE_IS_CSV)
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: data,
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            table = app.query_one("#reports-table", DataTable)
+            table.move_cursor(row=1, column=1)
+            await pilot.pause()
+            assert table.cursor_column == 1
+
+            app.query_one(ReportsPane).focus()
+            await pilot.press("h")
+            await pilot.pause()
+            assert table.cursor_column == 0
+
+
 class TestReportsPaneErrors:
     """Tests for error handling in ReportsPane."""
 
