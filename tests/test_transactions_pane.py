@@ -18,6 +18,13 @@ from tests.conftest import has_hledger
 pytestmark = pytest.mark.skipif(not has_hledger(), reason="hledger not installed")
 
 
+async def _wait_until(pilot, condition) -> None:
+    for _ in range(10):
+        if condition():
+            return
+        await pilot.pause(delay=0.1)
+
+
 @pytest.fixture
 def txn_pane_journal(tmp_path: Path) -> Path:
     """A minimal journal with current-month transactions."""
@@ -203,15 +210,13 @@ class TestTransactionsPaneClone:
             await pilot.press("2")
             await pilot.pause(delay=0.5)
             data_table = app3.query_one(TransactionsTable).query_one(DataTable)
-            for _ in range(10):
-                if data_table.row_count > 0 and data_table.has_focus:
-                    break
-                await pilot.pause(delay=0.1)
+            await _wait_until(
+                pilot, lambda: data_table.row_count > 0 and data_table.has_focus
+            )
             await pilot.press("c")
-            for _ in range(10):
-                if isinstance(app3.screen, TransactionFormScreen):
-                    break
-                await pilot.pause(delay=0.1)
+            await _wait_until(
+                pilot, lambda: isinstance(app3.screen, TransactionFormScreen)
+            )
             assert isinstance(app3.screen, TransactionFormScreen)
 
 
@@ -236,8 +241,12 @@ class TestTransactionsPaneMove:
             await pilot.pause()
             await pilot.press("2")
             await pilot.pause(delay=0.5)
+            data_table = app3.query_one(TransactionsTable).query_one(DataTable)
+            await _wait_until(
+                pilot, lambda: data_table.row_count > 0 and data_table.has_focus
+            )
             await pilot.press("m")
-            await pilot.pause(delay=0.5)
+            await _wait_until(pilot, lambda: isinstance(app3.screen, MoveConfirmModal))
             assert isinstance(app3.screen, MoveConfirmModal)
 
     async def test_move_cancel_dismisses_modal(self, app3: HledgerTuiApp) -> None:
@@ -245,8 +254,12 @@ class TestTransactionsPaneMove:
             await pilot.pause()
             await pilot.press("2")
             await pilot.pause(delay=0.5)
+            data_table = app3.query_one(TransactionsTable).query_one(DataTable)
+            await _wait_until(
+                pilot, lambda: data_table.row_count > 0 and data_table.has_focus
+            )
             await pilot.press("m")
-            await pilot.pause(delay=0.5)
+            await _wait_until(pilot, lambda: isinstance(app3.screen, MoveConfirmModal))
             assert isinstance(app3.screen, MoveConfirmModal)
             await pilot.press("escape")
             await pilot.pause(delay=0.3)
