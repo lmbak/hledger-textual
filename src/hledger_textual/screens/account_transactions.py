@@ -30,6 +30,7 @@ class AccountTransactionsScreen(Screen):
         Binding("d", "delete", "Delete", show=True, priority=True),
         Binding("n", "edit_note", "Note", show=True, priority=True),
         Binding("r", "refresh", "Refresh", show=True, priority=True),
+        Binding("S", "toggle_sort_amount", "Sort amount", show=True, priority=True),
     ]
 
     def __init__(
@@ -70,7 +71,7 @@ class AccountTransactionsScreen(Screen):
             yield Static("", id="acctxn-note")
             yield Static(
                 "\\[Esc] Back  \\[/] Search  \\[e] Edit  \\[d] Delete"
-                "  \\[n] Note  \\[r] Refresh  \\[?] Help",
+                "  \\[n] Note  \\[r] Refresh  \\[S] Sort  \\[?] Help",
                 id="acctxn-footer",
             )
 
@@ -145,3 +146,9 @@ class AccountTransactionsScreen(Screen):
         """Reload transactions from the journal."""
         self._table.do_refresh()
         self._refresh_metadata()
+
+    def action_toggle_sort_amount(self) -> None:
+        """Toggle sorting transactions by amount (largest first)."""
+        sorted_by_amount = self._table.toggle_sort_amount()
+        label = "Sorted by amount" if sorted_by_amount else "Sorted by date"
+        self.notify(label, timeout=2)

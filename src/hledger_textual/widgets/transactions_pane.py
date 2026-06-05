@@ -37,6 +37,7 @@ class TransactionsPane(Widget):
         Binding("f", "saved_filters", "Filters", show=False, priority=True),
         Binding("ctrl+s", "save_filter", "Save Filter", show=False, priority=True),
         Binding("r", "refresh", "Refresh", show=True, priority=True),
+        Binding("S", "toggle_sort_amount", "Sort amount", show=True, priority=True),
         Binding("escape", "dismiss_filter", "Dismiss filter", show=False),
         Binding("left", "prev_month", "Previous month", show=False, priority=True),
         Binding("right", "next_month", "Next month", show=False, priority=True),
@@ -109,6 +110,12 @@ class TransactionsPane(Widget):
         """Reload transactions and summary from the journal."""
         self._table.do_refresh()
         self._load_summary(self._table.current_month)
+
+    def action_toggle_sort_amount(self) -> None:
+        """Toggle sorting transactions by amount (largest first)."""
+        sorted_by_amount = self._table.toggle_sort_amount()
+        label = "Sorted by amount" if sorted_by_amount else "Sorted by date"
+        self.notify(label, timeout=2)
 
     def action_filter(self) -> None:
         """Show the filter panel."""

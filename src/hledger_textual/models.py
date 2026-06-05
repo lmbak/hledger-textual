@@ -169,13 +169,21 @@ class Transaction:
             return "E"
         return "-"
 
-    @property
-    def total_amount(self) -> str:
-        """Return the sum of positive amounts for display.
+    def _positive_amounts(
+        self,
+    ) -> tuple[dict[str, Decimal], dict[str, AmountStyle]]:
+        """Aggregate positive posting amounts per commodity.
 
+        Walks postings, summing positive ``amount.quantity`` per commodity.
         When a posting carries a cost annotation (e.g. ``10 XDWD @@ €1185``),
-        the cost is included in the totals so that the display shows the EUR
-        value invested rather than unrelated small amounts like bank fees.
+        the absolute cost quantity is added to the cost commodity so that
+        investment transactions are valued in the cost currency rather than
+        in unrelated small bank-fee amounts.
+
+        Returns:
+            A tuple ``(amounts, styles)`` where ``amounts`` maps commodity to
+            the summed ``Decimal`` and ``styles`` maps commodity to the first
+            ``AmountStyle`` seen for that commodity.
         """
         positive_amounts: dict[str, Decimal] = {}
         styles: dict[str, AmountStyle] = {}
@@ -191,6 +199,27 @@ class Transaction:
                         positive_amounts[ck] = positive_amounts.get(ck, Decimal(0)) + abs(amount.cost.quantity)
                         if ck not in styles:
                             styles[ck] = amount.cost.style
+        return positive_amounts, styles
+
+    def amount_in(self, commodity: str) -> Decimal:
+        """Return the aggregated positive amount in a single commodity.
+
+        Used as a numeric sort key when ordering transactions by size. For
+        multi-commodity transactions without a cost annotation, commodities
+        other than *commodity* sort to ``Decimal(0)``.
+        """
+        positive_amounts, _ = self._positive_amounts()
+        return positive_amounts.get(commodity, Decimal(0))
+
+    @property
+    def total_amount(self) -> str:
+        """Return the sum of positive amounts for display.
+
+        When a posting carries a cost annotation (e.g. ``10 XDWD @@ €1185``),
+        the cost is included in the totals so that the display shows the EUR
+        value invested rather than unrelated small amounts like bank fees.
+        """
+        positive_amounts, styles = self._positive_amounts()
         if not positive_amounts:
             return ""
         parts = []

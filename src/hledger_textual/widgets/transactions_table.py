@@ -13,6 +13,7 @@ from textual.widget import Widget
 from rich.text import Text
 from textual.widgets import DataTable, Input, Static
 
+from hledger_textual.config import load_default_commodity
 from hledger_textual.dateutil import next_month as _next_month
 from hledger_textual.dateutil import prev_month as _prev_month
 from hledger_textual.cache import HledgerCache
@@ -76,6 +77,7 @@ class TransactionsTable(Widget):
         self._date_query: str = "" if fixed_query else self._month_query()
         self._search_query: str = ""
         self._all_transactions: list[Transaction] = []
+        self._sort_amount: bool = False
 
     # ------------------------------------------------------------------
     # Month helpers
@@ -440,9 +442,40 @@ class TransactionsTable(Widget):
         self.app.call_from_thread(self._set_transactions, txns)
 
     def _set_transactions(self, txns: list[Transaction]) -> None:
-        """Store loaded transactions and refresh the table."""
-        self._all_transactions = txns
-        self._update_table(txns)
+        """Store loaded transactions and refresh the table.
+
+        Copies *txns* before storing so that any in-place sorting performed
+        later (see :meth:`toggle_sort_amount`) does not mutate a list that
+        may be aliased by the result cache.
+        """
+        self._all_transactions = list(txns)
+        if self._sort_amount:
+            commodity = load_default_commodity()
+            self._all_transactions.sort(
+                key=lambda t: t.amount_in(commodity), reverse=True
+            )
+        self._update_table(self._all_transactions)
+
+    def toggle_sort_amount(self) -> bool:
+        """Toggle sort-by-amount mode.
+
+        When enabled, transactions are sorted by their amount in the default
+        commodity, largest first. When disabled, the original date order from
+        hledger is restored by reloading.
+
+        Returns:
+            The new value of the sort-amount flag.
+        """
+        self._sort_amount = not self._sort_amount
+        if self._sort_amount:
+            commodity = load_default_commodity()
+            self._all_transactions.sort(
+                key=lambda t: t.amount_in(commodity), reverse=True
+            )
+            self._update_table(self._all_transactions)
+        else:
+            self._load_transactions()
+        return self._sort_amount
 
     def _set_empty_state_visible(self, visible: bool) -> None:
         """Toggle the empty-state message and table visibility."""
@@ -465,6 +498,7 @@ class TransactionsTable(Widget):
         is_current_month = (
             not self._fixed_query
             and not self._search_query
+            and not self._sort_amount
             and self._current_month.year == today.year
             and self._current_month.month == today.month
         )

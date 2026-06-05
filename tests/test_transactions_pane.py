@@ -296,3 +296,84 @@ class TestTransactionsPaneFilter:
             await pilot.press("escape")
             await pilot.pause(delay=0.3)
             assert search.disabled
+
+
+@pytest.fixture
+def sort_journal(tmp_path: Path) -> Path:
+    """Three same-day transactions with different amounts for sort tests."""
+    d = date.today().isoformat()
+    content = (
+        f"{d} Salary\n"
+        "    assets:bank:checking               €3000.00\n"
+        "    income:salary\n"
+        "\n"
+        f"{d} Grocery shopping\n"
+        "    expenses:food:groceries              €40.00\n"
+        "    assets:bank:checking\n"
+        "\n"
+        f"{d} Office supplies\n"
+        "    expenses:office                      €25.00\n"
+        "    assets:bank:checking\n"
+    )
+    path = tmp_path / "sort.journal"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def sort_app(sort_journal: Path) -> HledgerTuiApp:
+    return HledgerTuiApp(journal_file=sort_journal)
+
+
+class TestTransactionsPaneSortAmount:
+    """'S' toggles sort by amount (largest first)."""
+
+    async def test_sort_amount_toggles_row_order(
+        self, sort_app: HledgerTuiApp
+    ) -> None:
+        from textual.coordinate import Coordinate
+
+        async with sort_app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+            await pilot.press("2")
+            await pilot.pause(delay=0.5)
+
+            data_table = sort_app.query_one(TransactionsTable).query_one(DataTable)
+            for _ in range(20):
+                if data_table.row_count >= 3:
+                    break
+                await pilot.pause(delay=0.1)
+
+            def descriptions() -> list[str]:
+                return [
+                    str(data_table.get_cell_at(Coordinate(r, 3)))
+                    for r in range(data_table.row_count)
+                ]
+
+            # Initial order is reverse insertion (newest-first; same date so
+            # journal-reverse order applies): Office, Grocery, Salary.
+            assert descriptions() == [
+                "Office supplies",
+                "Grocery shopping",
+                "Salary",
+            ]
+
+            await pilot.press("S")
+            await pilot.pause(delay=0.5)
+
+            # Sorted by amount descending: Salary €3000 > Grocery €40 > Office €25.
+            assert descriptions() == [
+                "Salary",
+                "Grocery shopping",
+                "Office supplies",
+            ]
+
+            await pilot.press("S")
+            await pilot.pause(delay=1.0)
+
+            # Reverted to original date order.
+            assert descriptions() == [
+                "Office supplies",
+                "Grocery shopping",
+                "Salary",
+            ]
