@@ -15,6 +15,8 @@ from hledger_textual.hledger import (
     escape_for_hledger,
     expand_search_query,
     get_hledger_version,
+    quote_query_term,
+    split_query,
     load_account_balances,
     load_accounts,
     load_descriptions,
@@ -857,6 +859,100 @@ class TestEscapeForHledger:
     def test_empty_string(self):
         """Empty input returns empty string."""
         assert escape_for_hledger("") == ""
+
+
+class TestQuoteQueryTerm:
+    """Tests for quote_query_term helper."""
+
+    def test_term_without_space_unchanged(self):
+        """Terms without whitespace are returned byte-identical."""
+        assert quote_query_term("acct:^expenses:food$") == "acct:^expenses:food$"
+
+    def test_term_with_space_is_quoted(self):
+        """A term containing a space is wrapped in double quotes."""
+        assert (
+            quote_query_term("acct:^expenses:dining out$")
+            == '"acct:^expenses:dining out$"'
+        )
+
+    def test_empty_string_unchanged(self):
+        """Empty input is returned unchanged."""
+        assert quote_query_term("") == ""
+
+
+class TestSplitQuery:
+    """Tests for split_query tokeniser."""
+
+    def test_plain_terms_split_on_whitespace(self):
+        """Unquoted terms split exactly like str.split()."""
+        assert split_query("acct:^expenses:food$ date:2026-01") == [
+            "acct:^expenses:food$",
+            "date:2026-01",
+        ]
+
+    def test_quoted_term_kept_together(self):
+        """A double-quoted term with a space stays a single token."""
+        assert split_query('"acct:^expenses:dining out$" date:2026-01') == [
+            "acct:^expenses:dining out$",
+            "date:2026-01",
+        ]
+
+    def test_backslash_escapes_preserved(self):
+        """Regex escapes from escape_for_hledger survive tokenisation."""
+        term = quote_query_term(
+            f"acct:^{escape_for_hledger('expenses:v2.0 spent')}$"
+        )
+        assert split_query(term) == [r"acct:^expenses:v2\.0 spent$"]
+
+    def test_hash_is_not_a_comment(self):
+        """'#' may appear in tags/queries and must not start a comment."""
+        assert split_query("tag:note=a#b") == ["tag:note=a#b"]
+
+    def test_unbalanced_quote_falls_back_to_split(self):
+        """Unbalanced quoting degrades gracefully to whitespace splitting."""
+        assert split_query('desc:"oops amt:>5') == ['desc:"oops', "amt:>5"]
+
+    def test_empty_query(self):
+        """Empty query yields no terms."""
+        assert split_query("") == []
+
+
+class TestLoadTransactionsSpacedAccount:
+    """Regression: drilling into an account whose name contains a space.
+
+    A quoted ``acct:`` regex term must reach hledger as a single argument,
+    otherwise hledger ORs the fragments and over-matches unrelated accounts.
+    """
+
+    @pytest.fixture
+    def spaced_journal(self, tmp_path: Path) -> Path:
+        journal = tmp_path / "spaced.journal"
+        journal.write_text(
+            "2026-01-05 Lunch\n"
+            "    expenses:dining out      €12.00\n"
+            "    assets:cash\n"
+            "\n"
+            "2026-01-07 Takeaway\n"
+            "    expenses:office:out      €5.00\n"
+            "    assets:cash\n"
+        )
+        return journal
+
+    def test_spaced_account_query_does_not_overmatch(self, spaced_journal: Path):
+        """Only the spaced account matches, not a sibling ending in 'out'."""
+        query = quote_query_term(
+            f"acct:^{escape_for_hledger('expenses:dining out')}$"
+        )
+        txns = load_transactions(spaced_journal, query=query)
+        assert [t.description for t in txns] == ["Lunch"]
+
+    def test_naive_split_would_overmatch(self, spaced_journal: Path):
+        """Document the bug: the unquoted/naively-split query over-matches."""
+        txns = load_transactions(
+            spaced_journal, query="acct:^expenses:dining out$"
+        )
+        # Without quoting, 'out$' is ORed in and pulls in expenses:office:out.
+        assert {t.description for t in txns} == {"Lunch", "Takeaway"}
 
 
 class TestLoadInvestmentReport:

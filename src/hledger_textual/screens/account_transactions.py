@@ -10,7 +10,12 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
-from hledger_textual.hledger import escape_for_hledger, load_account_directives, save_account_directive
+from hledger_textual.hledger import (
+    escape_for_hledger,
+    load_account_directives,
+    quote_query_term,
+    save_account_directive,
+)
 from hledger_textual.widgets.transactions_table import TransactionsTable
 
 
@@ -62,7 +67,7 @@ class AccountTransactionsScreen(Screen):
             yield Label(f"← {self.account}", id="acctxn-title")
             yield Label(self.balance, id="acctxn-balance")
 
-        fixed_query = f"acct:^{escape_for_hledger(self.account)}$"
+        fixed_query = quote_query_term(f"acct:^{escape_for_hledger(self.account)}$")
         if self._date_query:
             fixed_query = f"{fixed_query} {self._date_query}"
         yield TransactionsTable(self.journal_file, fixed_query=fixed_query)

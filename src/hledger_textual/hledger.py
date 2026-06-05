@@ -102,18 +102,20 @@ _QUERY_ALIASES: dict[str, str] = {
 }
 
 # Regex metacharacters to escape for hledger queries.  Spaces are
-# intentionally excluded because hledger uses spaces as query separators
-# (``query.split()``).  Python's ``re.escape`` escapes spaces as ``\ ``
-# which, after splitting, leaves a trailing backslash that hledger rejects.
+# intentionally excluded: an account name may legitimately contain a space
+# (e.g. ``expenses:dining out``) and that space is part of the regex.  The
+# resulting term must be wrapped in :func:`quote_query_term` so it survives
+# tokenisation by :func:`split_query` as a single argument.
 _HLEDGER_RE_META = re.compile(r'([\\.^$*+?{}()|[\]])')
 
 
 def escape_for_hledger(text: str) -> str:
     """Escape regex metacharacters for use in an hledger query.
 
-    Unlike :func:`re.escape`, this does **not** escape spaces so that the
-    resulting string survives ``query.split()`` inside
-    :func:`load_transactions`.
+    Unlike :func:`re.escape`, this does **not** escape spaces, so account
+    names containing spaces keep them as part of the regex.  Wrap the
+    resulting term with :func:`quote_query_term` when it may contain spaces
+    so :func:`split_query` keeps it as a single argument.
 
     Args:
         text: Raw text (typically an account name).
@@ -122,6 +124,52 @@ def escape_for_hledger(text: str) -> str:
         The text with regex metacharacters backslash-escaped.
     """
     return _HLEDGER_RE_META.sub(r'\\\1', text)
+
+
+def quote_query_term(term: str) -> str:
+    """Wrap a query term in double quotes when it contains whitespace.
+
+    hledger query strings are tokenised on whitespace (see
+    :func:`split_query`), so a single term that contains a space — such as
+    an ``acct:`` regex for an account name like ``expenses:dining out`` —
+    must be quoted to stay one argument.  Terms without whitespace are
+    returned unchanged so the common case stays byte-identical.
+
+    Args:
+        term: A single query term.
+
+    Returns:
+        The term, double-quoted if it contains whitespace.
+    """
+    if term and any(c.isspace() for c in term):
+        return f'"{term}"'
+    return term
+
+
+def split_query(query: str) -> list[str]:
+    """Split an hledger query string into individual argument terms.
+
+    Unlike ``str.split()``, double/single-quoted spans are kept together so
+    a single term may contain spaces (e.g. ``"acct:^expenses:dining out$"``).
+    Backslash escapes are preserved verbatim so regex metacharacters escaped
+    by :func:`escape_for_hledger` survive, and ``#`` is treated as an
+    ordinary character rather than a comment.  Falls back to whitespace
+    splitting when the quoting is unbalanced.
+
+    Args:
+        query: An hledger query string composed of whitespace-separated terms.
+
+    Returns:
+        The individual query terms.
+    """
+    lexer = shlex.shlex(query, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""  # keep backslashes literal (regex escaping)
+    lexer.commenters = ""  # '#' may appear in tags/queries, not a comment
+    try:
+        return list(lexer)
+    except ValueError:
+        return query.split()
 
 
 def expand_search_query(query: str) -> str:
@@ -293,7 +341,7 @@ def load_transactions(
     """
     args = ["print", "-O", "json"]
     if query:
-        args.extend(query.split())
+        args.extend(split_query(query))
 
     cache_key = ("load_transactions", tuple(args), str(file), reverse)
     if cache is not None:
