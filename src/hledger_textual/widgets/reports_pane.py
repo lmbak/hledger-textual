@@ -11,7 +11,10 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.message import Message
+from textual.strip import Strip
 from textual.widget import Widget
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual.widgets import DataTable, Select, Static
 
@@ -166,6 +169,105 @@ def _merge_investments(is_data: ReportData, inv_data: ReportData) -> ReportData:
     )
 
 
+class ReportsDataTable(DataTable):
+    """DataTable tuned for the reports pane.
+
+    Two visual aids on top of a stock :class:`~textual.widgets.DataTable`:
+
+    - **Row highlight with a cell cursor.** Textual only supports a single
+      ``cursor_type`` at a time, so there is no built-in "tint the row *and*
+      mark a cell" mode.  We keep ``cursor_type = "cell"`` (the active period
+      cell stays clearly marked) and additionally tint the whole cursor row so
+      the left-hand account/category is always easy to trace.
+    - **Chapter rules.** Row indices listed in :attr:`rule_rows` are rendered
+      as a full-width horizontal rule, used to delimit the top-level category
+      groups (the direct children of each section root) into visual
+      "chapters".  The cursor skips over these rows.
+    """
+
+    COMPONENT_CLASSES = DataTable.COMPONENT_CLASSES | {
+        "datatable--row-highlight",
+        "datatable--rule",
+    }
+
+    DEFAULT_CSS = """
+    ReportsDataTable > .datatable--row-highlight {
+        background: $boost;
+    }
+    ReportsDataTable > .datatable--rule {
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        #: Row indices rendered as a full-width rule (chapter separators).
+        self.rule_rows: set[int] = set()
+
+    def _get_row_style(self, row_index: int, base_style: Style) -> Style:
+        """Tint the cursor's row while leaving the cell cursor on top.
+
+        The per-cell cursor style is layered on top of this row style by
+        :meth:`DataTable._render_cell`, so the active cell still stands out
+        against the tinted row.
+        """
+        style = super()._get_row_style(row_index, base_style)
+        if (
+            self.show_cursor
+            and self.cursor_type == "cell"
+            and row_index >= 0
+            and row_index == self.cursor_coordinate.row
+        ):
+            style += self.get_component_styles("datatable--row-highlight").rich_style
+        return style
+
+    def watch_cursor_coordinate(self, old_coordinate, new_coordinate) -> None:
+        """Refresh whole rows so the row tint follows the cell cursor.
+
+        The stock cell cursor only refreshes cell-sized regions on the old and
+        new coordinate.  Because the row tint spans the full width, that would
+        leave stale highlight on the cells the cursor did not pass over.  We
+        refresh the entire old and new rows so the tint stays in sync.
+        """
+        super().watch_cursor_coordinate(old_coordinate, new_coordinate)
+        if (
+            old_coordinate != new_coordinate
+            and self.cursor_type == "cell"
+            and self.show_cursor
+        ):
+            self.refresh_row(old_coordinate.row)
+            self.refresh_row(new_coordinate.row)
+
+    def _render_line(self, y: int, x1: int, x2: int, base_style: Style) -> Strip:
+        """Draw rule rows as a continuous full-width line."""
+        if self.rule_rows:
+            try:
+                row_key, _ = self._get_offsets(y)
+            except LookupError:
+                row_key = None
+            if (
+                row_key is not None
+                and row_key in self._row_locations
+                and self._row_locations.get(row_key) in self.rule_rows
+            ):
+                width = self.size.width
+                rule_style = self.get_component_styles("datatable--rule").rich_style
+                return Strip([Segment("─" * width, rule_style)], width)
+        return super()._render_line(y, x1, x2, base_style)
+
+    def action_cursor_down(self) -> None:
+        """Move down, skipping over rule rows."""
+        super().action_cursor_down()
+        if self.cursor_coordinate.row in self.rule_rows:
+            super().action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        """Move up, skipping over rule rows."""
+        super().action_cursor_up()
+        if self.cursor_coordinate.row in self.rule_rows:
+            super().action_cursor_up()
+
+
 class ReportsPane(DataTablePaneMixin, Widget):
     """Widget showing multi-period hledger financial reports."""
 
@@ -255,7 +357,7 @@ class ReportsPane(DataTablePaneMixin, Widget):
             icon="📭",
             id="reports-empty-state",
         )
-        yield DataTable(id="reports-table")
+        yield ReportsDataTable(id="reports-table")
         with VerticalScroll(id="custom-report-output"):
             yield Static("", id="custom-report-text")
 
@@ -457,7 +559,7 @@ class ReportsPane(DataTablePaneMixin, Widget):
 
     def _apply_report(self) -> None:
         """Apply loaded report data to the DataTable."""
-        table = self.query_one("#reports-table", DataTable)
+        table = self.query_one("#reports-table", ReportsDataTable)
         data = self._report_data
 
         if data is None:
@@ -477,6 +579,13 @@ class ReportsPane(DataTablePaneMixin, Widget):
         self._table_rows = []
         self._row_full_paths = []
         path_stack: list[str] = []
+        rule_rows: set[int] = set()
+        # A section's accounts roll up under a single root row (e.g. ``expenses``
+        # at depth 0); the meaningful top-level categories are its direct
+        # children one level deeper.  Track that root depth so we can rule
+        # between those category groups.
+        section_root_depth: int | None = None
+        seen_chapter = False
 
         for idx, row in enumerate(data.rows):
             if row.is_section_header and idx > 0:
@@ -488,11 +597,28 @@ class ReportsPane(DataTablePaneMixin, Widget):
                 self._table_rows.append(None)
                 self._row_full_paths.append("")
 
+            # Draw a chapter rule before each top-level category group in tree
+            # mode (the direct children of the section root), so every level-1
+            # category reads as its own "chapter".
+            is_data_row = not row.is_section_header and not row.is_total
+            if is_data_row and self._tree_mode:
+                if section_root_depth is None:
+                    section_root_depth = row.depth
+                if row.depth == section_root_depth + 1:
+                    if seen_chapter:
+                        rule_rows.add(len(self._table_rows))
+                        table.add_row(*empty_row)
+                        self._table_rows.append(None)
+                        self._row_full_paths.append("")
+                    seen_chapter = True
+
             # Compute full account path for tree mode
             if row.is_section_header or row.is_total:
                 full_path = ""
                 if row.is_section_header:
                     path_stack.clear()
+                    section_root_depth = None
+                    seen_chapter = False
             else:
                 if self._tree_mode:
                     while len(path_stack) > row.depth:
@@ -533,6 +659,8 @@ class ReportsPane(DataTablePaneMixin, Widget):
             table.add_row(*cells)
             self._table_rows.append(row)
             self._row_full_paths.append(full_path)
+
+        table.rule_rows = rule_rows
 
         if self._fixed_widths:
             distribute_column_widths(table, self._fixed_widths)

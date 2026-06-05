@@ -812,3 +812,193 @@ class TestReportsPaneDrillDown:
             assert app.screen.account == "income:salary"
 
             await pilot.press("escape")
+
+
+def _chapters_data() -> ReportData:
+    """A section whose accounts roll up under a single depth-0 root.
+
+    Mirrors real hledger tree output: ``expenses`` is the depth-0 section
+    root, and the meaningful top-level categories (``food``, ``transport``)
+    are its depth-1 children.  A chapter rule belongs between those.
+    """
+    return ReportData(
+        title="IS",
+        period_headers=["Jan", "Feb"],
+        rows=[
+            ReportRow(account="Expenses", amounts=["", ""], is_section_header=True),
+            ReportRow(account="expenses", amounts=["€50", "€50"], depth=0),
+            ReportRow(account="food", amounts=["€40", "€40"], depth=1),
+            ReportRow(account="groceries", amounts=["€40", "€40"], depth=2),
+            ReportRow(account="transport", amounts=["€10", "€10"], depth=1),
+            ReportRow(account="car", amounts=["€10", "€10"], depth=2),
+            ReportRow(account="Net:", amounts=["€50", "€50"], is_total=True),
+        ],
+    )
+
+
+class TestReportsPaneChapterRules:
+    """Tests for chapter rules and the cursor-row highlight (ReportsDataTable)."""
+
+    async def test_rule_drawn_between_top_level_groups_in_tree_mode(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """A rule row is inserted before each subsequent depth-1 category."""
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: _chapters_data(),
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            pane = app.query_one(ReportsPane)
+            pane._tree_mode = True
+            pane.focus()
+            await pilot.press("r")
+            await pilot.pause(delay=0.5)
+
+            table = app.query_one("#reports-table", DataTable)
+            # Layout: 0 Expenses, 1 expenses(root), 2 food, 3 groceries,
+            # 4 RULE, 5 transport, 6 car, 7 blank, 8 Net.
+            assert table.rule_rows == {4}
+            assert pane._table_rows[4] is None
+
+    async def test_no_rules_in_flat_mode(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """Flat mode has no hierarchy, so no chapter rules are drawn."""
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: _chapters_data(),
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            table = app.query_one("#reports-table", DataTable)
+            assert table.rule_rows == set()
+
+    async def test_cursor_skips_rule_rows(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """Moving down onto a rule row jumps past it to the next data row."""
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: _chapters_data(),
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            pane = app.query_one(ReportsPane)
+            pane._tree_mode = True
+            pane.focus()
+            await pilot.press("r")
+            await pilot.pause(delay=0.5)
+
+            table = app.query_one("#reports-table", DataTable)
+            # Sit on row 3 (groceries), one above the rule at row 4.
+            table.move_cursor(row=3, column=0)
+            await pilot.pause()
+            await pilot.press("j")
+            await pilot.pause()
+            assert table.cursor_row == 5  # skipped the rule at 4
+
+            await pilot.press("k")
+            await pilot.pause()
+            assert table.cursor_row == 3  # skipped back over the rule
+
+    async def test_cursor_row_is_tinted(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """The cursor's row gets a background tint while other rows do not."""
+        from rich.style import Style
+
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: _chapters_data(),
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            table = app.query_one("#reports-table", DataTable)
+            table.move_cursor(row=1, column=0)
+            await pilot.pause()
+
+            cursor_style = table._get_row_style(1, Style())
+            other_style = table._get_row_style(5, Style())
+            assert cursor_style.bgcolor is not None
+            assert other_style.bgcolor is None
+
+    async def test_rule_row_renders_as_line(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """The rule row paints a horizontal line, and keeps it after a move.
+
+        Guards against the line being invisible or getting erased when the
+        cursor moves and surrounding regions are refreshed.
+        """
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: _chapters_data(),
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            pane = app.query_one(ReportsPane)
+            pane._tree_mode = True
+            pane.focus()
+            await pilot.press("r")
+            await pilot.pause(delay=0.5)
+
+            table = app.query_one("#reports-table", DataTable)
+            (rule_idx,) = tuple(table.rule_rows)
+
+            def rule_line_text() -> str:
+                y = table._get_row_region(rule_idx).y
+                return table.render_line(y).text
+
+            assert "─" in rule_line_text()
+
+            # Moving the cursor near the rule must not erase it.
+            table.move_cursor(row=rule_idx - 1, column=0)
+            await pilot.pause()
+            table.move_cursor(row=rule_idx + 1, column=1)
+            await pilot.pause()
+            assert "─" in rule_line_text()
+
+    async def test_cursor_move_refreshes_full_rows(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """Moving the cell cursor refreshes whole rows, not just cells.
+
+        Otherwise the full-width row tint would leave stale highlight on the
+        cells the cursor did not pass over.
+        """
+        from unittest.mock import patch
+
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: _chapters_data(),
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            table = app.query_one("#reports-table", DataTable)
+            table.move_cursor(row=1, column=0)
+            await pilot.pause()
+
+            # Move right within the same row: the whole row must refresh so
+            # the cells right of the new cursor get the tint.
+            with patch.object(
+                table, "refresh_row", wraps=table.refresh_row
+            ) as spy:
+                table.move_cursor(row=1, column=2)
+                await pilot.pause()
+            assert 1 in [call.args[0] for call in spy.call_args_list]
+
+            # Move to a different row: both old and new rows must refresh.
+            with patch.object(
+                table, "refresh_row", wraps=table.refresh_row
+            ) as spy:
+                table.move_cursor(row=5, column=2)
+                await pilot.pause()
+            refreshed = {call.args[0] for call in spy.call_args_list}
+            assert {1, 5} <= refreshed
