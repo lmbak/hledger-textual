@@ -54,6 +54,66 @@ _PERIOD_RANGES = [
     ("Year to date", 0),
 ]
 
+# Glyphs for chapter rules, indexed by the nesting level of the boundary.
+# Prominence decreases with depth by combining stroke weight (heavy → light)
+# and texture (solid → dashed → dotted), so the line itself signals how high
+# up the tree the break sits.  The last glyph is reused for deeper levels.
+_RULE_GLYPHS = ["━", "─", "┄", "┈"]
+
+
+def _compute_chapter_rules(rows: list[ReportRow]) -> dict[int, int]:
+    """Decide which data rows get a preceding chapter rule, and at what level.
+
+    A rule is only worth drawing where there is real sub-structure, so it
+    brackets the top-level category groups (depth = section root + 1) that
+    actually have children.  Adjacent leaf categories get no rule between
+    them.  Deeper levels are left to indentation to avoid turning a bushy
+    report into mostly lines.
+
+    Args:
+        rows: The report rows, in display order.
+
+    Returns:
+        A mapping from a row's index in *rows* to the rule level that should
+        precede it: ``0`` for the heavy break under a section root, ``1`` for
+        the lighter break between top-level category groups.
+    """
+    n = len(rows)
+
+    def is_data(i: int) -> bool:
+        return 0 <= i < n and not rows[i].is_section_header and not rows[i].is_total
+
+    rule_before: dict[int, int] = {}
+    section_root_depth: int | None = None
+    prev_category_has_children = False
+    seen_category = False
+
+    for i, row in enumerate(rows):
+        if row.is_section_header:
+            section_root_depth = None
+            prev_category_has_children = False
+            seen_category = False
+            continue
+        if row.is_total:
+            continue
+        # Data row.
+        if section_root_depth is None:
+            section_root_depth = row.depth  # the section's roll-up root
+            continue
+        if row.depth != section_root_depth + 1:
+            continue  # the root itself or a deeper child, not a category
+        # A top-level category.  It is a "group" when its next row is a child.
+        has_children = is_data(i + 1) and rows[i + 1].depth > row.depth
+        if not seen_category:
+            if has_children:
+                rule_before[i] = 0  # heavy line under the section root
+        elif has_children or prev_category_has_children:
+            rule_before[i] = 1  # break opening or closing a group
+        prev_category_has_children = has_children
+        seen_category = True
+
+    return rule_before
+
 
 def _format_custom_output(raw: str, *, skip_title: bool = False) -> Text:
     """Apply Rich styling to raw hledger text output.
@@ -179,10 +239,13 @@ class ReportsDataTable(DataTable):
       mark a cell" mode.  We keep ``cursor_type = "cell"`` (the active period
       cell stays clearly marked) and additionally tint the whole cursor row so
       the left-hand account/category is always easy to trace.
-    - **Chapter rules.** Row indices listed in :attr:`rule_rows` are rendered
-      as a full-width horizontal rule, used to delimit the top-level category
-      groups (the direct children of each section root) into visual
-      "chapters".  The cursor skips over these rows.
+    - **Chapter rules.** :attr:`rule_levels` maps a row index to the level of
+      a group boundary; that row is rendered as a full-width rule whose glyph
+      (:data:`_RULE_GLYPHS`) reflects the level — a heavy solid line under a
+      section root, a lighter line between the top-level category groups.
+      Boundaries are produced by :func:`_compute_chapter_rules`, which only
+      rules around categories that actually have children.  The cursor skips
+      over these rows.
     """
 
     COMPONENT_CLASSES = DataTable.COMPONENT_CLASSES | {
@@ -201,8 +264,8 @@ class ReportsDataTable(DataTable):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        #: Row indices rendered as a full-width rule (chapter separators).
-        self.rule_rows: set[int] = set()
+        #: Maps a rule row index to the nesting level of its group boundary.
+        self.rule_levels: dict[int, int] = {}
 
     def _get_row_style(self, row_index: int, base_style: Style) -> Style:
         """Tint the cursor's row while leaving the cell cursor on top.
@@ -239,32 +302,33 @@ class ReportsDataTable(DataTable):
             self.refresh_row(new_coordinate.row)
 
     def _render_line(self, y: int, x1: int, x2: int, base_style: Style) -> Strip:
-        """Draw rule rows as a continuous full-width line."""
-        if self.rule_rows:
+        """Draw rule rows as a full-width line whose glyph reflects the level."""
+        if self.rule_levels:
             try:
                 row_key, _ = self._get_offsets(y)
             except LookupError:
                 row_key = None
-            if (
-                row_key is not None
-                and row_key in self._row_locations
-                and self._row_locations.get(row_key) in self.rule_rows
-            ):
-                width = self.size.width
-                rule_style = self.get_component_styles("datatable--rule").rich_style
-                return Strip([Segment("─" * width, rule_style)], width)
+            if row_key is not None and row_key in self._row_locations:
+                level = self.rule_levels.get(self._row_locations.get(row_key))
+                if level is not None:
+                    width = self.size.width
+                    glyph = _RULE_GLYPHS[min(level, len(_RULE_GLYPHS) - 1)]
+                    rule_style = self.get_component_styles(
+                        "datatable--rule"
+                    ).rich_style
+                    return Strip([Segment(glyph * width, rule_style)], width)
         return super()._render_line(y, x1, x2, base_style)
 
     def action_cursor_down(self) -> None:
         """Move down, skipping over rule rows."""
         super().action_cursor_down()
-        if self.cursor_coordinate.row in self.rule_rows:
+        if self.cursor_coordinate.row in self.rule_levels:
             super().action_cursor_down()
 
     def action_cursor_up(self) -> None:
         """Move up, skipping over rule rows."""
         super().action_cursor_up()
-        if self.cursor_coordinate.row in self.rule_rows:
+        if self.cursor_coordinate.row in self.rule_levels:
             super().action_cursor_up()
 
 
@@ -579,13 +643,10 @@ class ReportsPane(DataTablePaneMixin, Widget):
         self._table_rows = []
         self._row_full_paths = []
         path_stack: list[str] = []
-        rule_rows: set[int] = set()
-        # A section's accounts roll up under a single root row (e.g. ``expenses``
-        # at depth 0); the meaningful top-level categories are its direct
-        # children one level deeper.  Track that root depth so we can rule
-        # between those category groups.
-        section_root_depth: int | None = None
-        seen_chapter = False
+        rule_levels: dict[int, int] = {}
+        # Pre-compute which data rows get a preceding chapter rule (tree mode
+        # only), keyed by their index in ``data.rows``.
+        rule_before = _compute_chapter_rules(data.rows) if self._tree_mode else {}
 
         for idx, row in enumerate(data.rows):
             if row.is_section_header and idx > 0:
@@ -597,28 +658,20 @@ class ReportsPane(DataTablePaneMixin, Widget):
                 self._table_rows.append(None)
                 self._row_full_paths.append("")
 
-            # Draw a chapter rule before each top-level category group in tree
-            # mode (the direct children of the section root), so every level-1
-            # category reads as its own "chapter".
+            # Insert the pre-computed chapter rule before this category row,
+            # tagged with its level (see _RULE_GLYPHS).
             is_data_row = not row.is_section_header and not row.is_total
-            if is_data_row and self._tree_mode:
-                if section_root_depth is None:
-                    section_root_depth = row.depth
-                if row.depth == section_root_depth + 1:
-                    if seen_chapter:
-                        rule_rows.add(len(self._table_rows))
-                        table.add_row(*empty_row)
-                        self._table_rows.append(None)
-                        self._row_full_paths.append("")
-                    seen_chapter = True
+            if is_data_row and idx in rule_before:
+                rule_levels[len(self._table_rows)] = rule_before[idx]
+                table.add_row(*empty_row)
+                self._table_rows.append(None)
+                self._row_full_paths.append("")
 
             # Compute full account path for tree mode
             if row.is_section_header or row.is_total:
                 full_path = ""
                 if row.is_section_header:
                     path_stack.clear()
-                    section_root_depth = None
-                    seen_chapter = False
             else:
                 if self._tree_mode:
                     while len(path_stack) > row.depth:
@@ -660,7 +713,7 @@ class ReportsPane(DataTablePaneMixin, Widget):
             self._table_rows.append(row)
             self._row_full_paths.append(full_path)
 
-        table.rule_rows = rule_rows
+        table.rule_levels = rule_levels
 
         if self._fixed_widths:
             distribute_column_widths(table, self._fixed_widths)

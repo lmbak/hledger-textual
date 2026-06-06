@@ -819,7 +819,8 @@ def _chapters_data() -> ReportData:
 
     Mirrors real hledger tree output: ``expenses`` is the depth-0 section
     root, and the meaningful top-level categories (``food``, ``transport``)
-    are its depth-1 children.  A chapter rule belongs between those.
+    are its depth-1 children.  A level-0 rule belongs under the root and a
+    level-1 rule between the categories.
     """
     return ReportData(
         title="IS",
@@ -839,10 +840,10 @@ def _chapters_data() -> ReportData:
 class TestReportsPaneChapterRules:
     """Tests for chapter rules and the cursor-row highlight (ReportsDataTable)."""
 
-    async def test_rule_drawn_between_top_level_groups_in_tree_mode(
+    async def test_rules_drawn_with_levels_in_tree_mode(
         self, reports_journal: Path, monkeypatch
     ):
-        """A rule row is inserted before each subsequent depth-1 category."""
+        """A level-tagged rule is inserted under the root and between groups."""
         monkeypatch.setattr(
             "hledger_textual.widgets.reports_pane.load_report",
             lambda *args, **kwargs: _chapters_data(),
@@ -857,10 +858,51 @@ class TestReportsPaneChapterRules:
             await pilot.pause(delay=0.5)
 
             table = app.query_one("#reports-table", DataTable)
-            # Layout: 0 Expenses, 1 expenses(root), 2 food, 3 groceries,
-            # 4 RULE, 5 transport, 6 car, 7 blank, 8 Net.
-            assert table.rule_rows == {4}
-            assert pane._table_rows[4] is None
+            # Layout: 0 Expenses, 1 expenses(root), 2 RULE-L0, 3 food,
+            # 4 groceries, 5 RULE-L1, 6 transport, 7 car, 8 blank, 9 Net.
+            assert table.rule_levels == {2: 0, 5: 1}
+            assert pane._table_rows[2] is None
+            assert pane._table_rows[5] is None
+
+    async def test_leaf_categories_get_no_rule(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """Adjacent leaf categories are not separated; only groups are ruled."""
+        data = ReportData(
+            title="IS",
+            period_headers=["Jan"],
+            rows=[
+                ReportRow(account="Expenses", amounts=[""], is_section_header=True),
+                ReportRow(account="expenses", amounts=["€90"], depth=0),
+                ReportRow(account="food", amounts=["€40"], depth=1),
+                ReportRow(account="groceries", amounts=["€40"], depth=2),
+                ReportRow(account="bankfee", amounts=["€5"], depth=1),
+                ReportRow(account="misc", amounts=["€5"], depth=1),
+                ReportRow(account="transport", amounts=["€40"], depth=1),
+                ReportRow(account="car", amounts=["€40"], depth=2),
+                ReportRow(account="Net:", amounts=["€90"], is_total=True),
+            ],
+        )
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: data,
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            pane = app.query_one(ReportsPane)
+            pane._tree_mode = True
+            pane.focus()
+            await pilot.press("r")
+            await pilot.pause(delay=0.5)
+
+            table = app.query_one("#reports-table", DataTable)
+            # Layout: 0 Expenses, 1 expenses, 2 RULE-L0, 3 food, 4 groceries,
+            # 5 RULE-L1, 6 bankfee, 7 misc, 8 RULE-L1, 9 transport, 10 car,
+            # 11 blank, 12 Net.  No rule sits between bankfee and misc.
+            assert table.rule_levels == {2: 0, 5: 1, 8: 1}
+            assert pane._table_rows[6].account == "bankfee"
+            assert pane._table_rows[7].account == "misc"
 
     async def test_no_rules_in_flat_mode(
         self, reports_journal: Path, monkeypatch
@@ -874,12 +916,12 @@ class TestReportsPaneChapterRules:
         async with app.run_test() as pilot:
             await pilot.pause(delay=0.5)
             table = app.query_one("#reports-table", DataTable)
-            assert table.rule_rows == set()
+            assert table.rule_levels == {}
 
     async def test_cursor_skips_rule_rows(
         self, reports_journal: Path, monkeypatch
     ):
-        """Moving down onto a rule row jumps past it to the next data row."""
+        """Moving onto a rule row jumps past it to the next data row."""
         monkeypatch.setattr(
             "hledger_textual.widgets.reports_pane.load_report",
             lambda *args, **kwargs: _chapters_data(),
@@ -894,16 +936,23 @@ class TestReportsPaneChapterRules:
             await pilot.pause(delay=0.5)
 
             table = app.query_one("#reports-table", DataTable)
-            # Sit on row 3 (groceries), one above the rule at row 4.
-            table.move_cursor(row=3, column=0)
+            # Rows 2 and 5 are rules. From the root (1), down skips the L0 rule.
+            table.move_cursor(row=1, column=0)
             await pilot.pause()
             await pilot.press("j")
             await pilot.pause()
-            assert table.cursor_row == 5  # skipped the rule at 4
+            assert table.cursor_row == 3  # skipped the L0 rule at 2
+
+            # From groceries (4), down skips the L1 rule at 5.
+            table.move_cursor(row=4, column=0)
+            await pilot.pause()
+            await pilot.press("j")
+            await pilot.pause()
+            assert table.cursor_row == 6
 
             await pilot.press("k")
             await pilot.pause()
-            assert table.cursor_row == 3  # skipped back over the rule
+            assert table.cursor_row == 4  # skipped back over the rule
 
     async def test_cursor_row_is_tinted(
         self, reports_journal: Path, monkeypatch
@@ -923,18 +972,21 @@ class TestReportsPaneChapterRules:
             await pilot.pause()
 
             cursor_style = table._get_row_style(1, Style())
-            other_style = table._get_row_style(5, Style())
+            other_style = table._get_row_style(6, Style())
             assert cursor_style.bgcolor is not None
             assert other_style.bgcolor is None
 
-    async def test_rule_row_renders_as_line(
+    async def test_rule_rows_render_level_glyphs(
         self, reports_journal: Path, monkeypatch
     ):
-        """The rule row paints a horizontal line, and keeps it after a move.
+        """Each rule paints the glyph for its level, and keeps it after a move.
 
-        Guards against the line being invisible or getting erased when the
-        cursor moves and surrounding regions are refreshed.
+        Verifies the texture/weight mapping (heavy solid for level 0, lighter
+        for deeper) and guards against the line being erased when the cursor
+        moves and surrounding regions are refreshed.
         """
+        from hledger_textual.widgets.reports_pane import _RULE_GLYPHS
+
         monkeypatch.setattr(
             "hledger_textual.widgets.reports_pane.load_report",
             lambda *args, **kwargs: _chapters_data(),
@@ -949,20 +1001,22 @@ class TestReportsPaneChapterRules:
             await pilot.pause(delay=0.5)
 
             table = app.query_one("#reports-table", DataTable)
-            (rule_idx,) = tuple(table.rule_rows)
 
-            def rule_line_text() -> str:
-                y = table._get_row_region(rule_idx).y
-                return table.render_line(y).text
+            def line_text(idx: int) -> str:
+                return table.render_line(table._get_row_region(idx).y).text
 
-            assert "─" in rule_line_text()
+            # Level 0 → heavy solid, level 1 → light solid (distinct glyphs).
+            assert _RULE_GLYPHS[0] != _RULE_GLYPHS[1]
+            for idx, level in table.rule_levels.items():
+                assert _RULE_GLYPHS[level] in line_text(idx)
 
-            # Moving the cursor near the rule must not erase it.
-            table.move_cursor(row=rule_idx - 1, column=0)
+            # Moving the cursor across the rules must not erase them.
+            table.move_cursor(row=3, column=0)
             await pilot.pause()
-            table.move_cursor(row=rule_idx + 1, column=1)
+            table.move_cursor(row=6, column=1)
             await pilot.pause()
-            assert "─" in rule_line_text()
+            for idx, level in table.rule_levels.items():
+                assert _RULE_GLYPHS[level] in line_text(idx)
 
     async def test_cursor_move_refreshes_full_rows(
         self, reports_journal: Path, monkeypatch
@@ -998,7 +1052,7 @@ class TestReportsPaneChapterRules:
             with patch.object(
                 table, "refresh_row", wraps=table.refresh_row
             ) as spy:
-                table.move_cursor(row=5, column=2)
+                table.move_cursor(row=6, column=2)
                 await pilot.pause()
             refreshed = {call.args[0] for call in spy.call_args_list}
-            assert {1, 5} <= refreshed
+            assert {1, 6} <= refreshed
