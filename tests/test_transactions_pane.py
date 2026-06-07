@@ -345,10 +345,13 @@ class TestTransactionsPaneSortAmount:
                 await pilot.pause(delay=0.1)
 
             def descriptions() -> list[str]:
-                return [
-                    str(data_table.get_cell_at(Coordinate(r, 3)))
-                    for r in range(data_table.row_count)
-                ]
+                result = []
+                for r in range(data_table.row_count):
+                    row_key, _ = data_table.coordinate_to_cell_key(Coordinate(r, 3))
+                    if row_key.value == "__total__":
+                        continue  # skip the summed footer row
+                    result.append(str(data_table.get_cell_at(Coordinate(r, 3))))
+                return result
 
             # Initial order is reverse insertion (newest-first; same date so
             # journal-reverse order applies): Office, Grocery, Salary.

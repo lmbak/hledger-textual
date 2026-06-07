@@ -18,7 +18,11 @@ from hledger_textual.dateutil import next_month as _next_month
 from hledger_textual.dateutil import prev_month as _prev_month
 from hledger_textual.cache import HledgerCache
 from hledger_textual.hledger import HledgerError, expand_search_query, load_transactions
-from hledger_textual.models import Transaction, TransactionStatus
+from hledger_textual.models import (
+    Transaction,
+    TransactionStatus,
+    format_transactions_total,
+)
 from hledger_textual.widgets import distribute_column_widths
 from hledger_textual.widgets.empty_state import EmptyState
 from hledger_textual.widgets.formatting import fmt_amount_str
@@ -554,7 +558,29 @@ class TransactionsTable(Widget):
                     key=str(txn.index),
                 )
 
+        # A total under a single transaction just repeats it, so only show
+        # the footer once there is more than one row to sum.
+        if len(transactions) > 1:
+            self._add_total_row(table, transactions)
+
         distribute_column_widths(table, self._TXN_FIXED, self._TXN_FLEX)
+
+    def _add_total_row(
+        self, table: DataTable, transactions: list[Transaction]
+    ) -> None:
+        """Append a bold footer row summing the Amount column."""
+        total = format_transactions_total(transactions)
+        if not total:
+            return
+        table.add_row(
+            Text(""),
+            Text(""),
+            Text(""),
+            Text(f"Total ({len(transactions)})", style="bold"),
+            Text(""),
+            Text(fmt_amount_str(total), style="bold"),
+            key="__total__",
+        )
 
     # ------------------------------------------------------------------
     # Event handlers

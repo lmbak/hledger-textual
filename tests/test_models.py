@@ -10,6 +10,7 @@ from hledger_textual.models import (
     Posting,
     Transaction,
     TransactionStatus,
+    format_transactions_total,
 )
 
 
@@ -204,6 +205,64 @@ class TestTransaction:
             ],
         )
         assert txn.total_amount == "€35.00"
+
+
+class TestFormatTransactionsTotal:
+    """Tests for format_transactions_total."""
+
+    def test_empty_list(self):
+        assert format_transactions_total([]) == ""
+
+    def test_sums_single_commodity(self, euro_style):
+        txns = [
+            Transaction(
+                index=i,
+                date="2026-01-01",
+                description="T",
+                postings=[
+                    Posting(
+                        account="expenses:food",
+                        amounts=[Amount(commodity="€", quantity=q, style=euro_style)],
+                    ),
+                    Posting(
+                        account="assets:bank",
+                        amounts=[Amount(commodity="€", quantity=-q, style=euro_style)],
+                    ),
+                ],
+            )
+            for i, q in enumerate([Decimal("40.80"), Decimal("10.00"), Decimal("5.20")])
+        ]
+        assert format_transactions_total(txns) == "€56.00"
+
+    def test_sums_multiple_commodities(self, euro_style):
+        named_style = AmountStyle(commodity_side="R", commodity_spaced=True, precision=2)
+        euro_txn = Transaction(
+            index=1,
+            date="2026-01-01",
+            description="Groceries",
+            postings=[
+                Posting(
+                    account="expenses:food",
+                    amounts=[Amount(commodity="€", quantity=Decimal("40.00"), style=euro_style)],
+                ),
+                Posting(account="assets:bank", amounts=[Amount(commodity="€", quantity=Decimal("-40.00"), style=euro_style)]),
+            ],
+        )
+        stock_txn = Transaction(
+            index=2,
+            date="2026-01-02",
+            description="Buy",
+            postings=[
+                Posting(
+                    account="assets:broker",
+                    amounts=[Amount(commodity="XEON", quantity=Decimal("3.00"), style=named_style)],
+                ),
+                Posting(account="assets:bank", amounts=[Amount(commodity="€", quantity=Decimal("-300.00"), style=euro_style)]),
+            ],
+        )
+        total = format_transactions_total([euro_txn, stock_txn])
+        assert "€40.00" in total
+        assert "3.00 XEON" in total
 
 
 class TestFindStyle:

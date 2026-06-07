@@ -137,6 +137,40 @@ class Posting:
     status: TransactionStatus = TransactionStatus.UNMARKED
 
 
+def _format_positive_totals(
+    amounts: dict[str, Decimal], styles: dict[str, AmountStyle]
+) -> str:
+    """Format per-commodity positive totals for display.
+
+    Currency amounts (left-side symbol, e.g. €) are capped to 2 decimal
+    places; named commodities (XEON, BTC on the right) keep their natural
+    precision.  Commodities are joined with ``", "``.
+
+    Args:
+        amounts: Mapping of commodity to its summed quantity.
+        styles: Mapping of commodity to the style to render it with.
+
+    Returns:
+        The formatted total, or an empty string when there is nothing to sum.
+    """
+    if not amounts:
+        return ""
+    parts = []
+    for commodity, qty in amounts.items():
+        style = styles.get(commodity, AmountStyle())
+        if style.commodity_side == "L" and style.precision > 2:
+            style = AmountStyle(
+                commodity_side=style.commodity_side,
+                commodity_spaced=style.commodity_spaced,
+                decimal_mark=style.decimal_mark,
+                digit_group_separator=style.digit_group_separator,
+                digit_group_sizes=style.digit_group_sizes,
+                precision=2,
+            )
+        parts.append(Amount(commodity=commodity, quantity=qty, style=style).format())
+    return ", ".join(parts)
+
+
 @dataclass
 class Transaction:
     """A complete journal transaction."""
@@ -219,27 +253,7 @@ class Transaction:
         the cost is included in the totals so that the display shows the EUR
         value invested rather than unrelated small amounts like bank fees.
         """
-        positive_amounts, styles = self._positive_amounts()
-        if not positive_amounts:
-            return ""
-        parts = []
-        for commodity, qty in positive_amounts.items():
-            style = styles.get(commodity, AmountStyle())
-            # Cap currency amounts (left-side symbol, e.g. €) to 2 decimal
-            # places for display. Named commodities (XEON, BTC on the right)
-            # keep their natural precision.
-            if style.commodity_side == "L" and style.precision > 2:
-                style = AmountStyle(
-                    commodity_side=style.commodity_side,
-                    commodity_spaced=style.commodity_spaced,
-                    decimal_mark=style.decimal_mark,
-                    digit_group_separator=style.digit_group_separator,
-                    digit_group_sizes=style.digit_group_sizes,
-                    precision=2,
-                )
-            amt = Amount(commodity=commodity, quantity=qty, style=style)
-            parts.append(amt.format())
-        return ", ".join(parts)
+        return _format_positive_totals(*self._positive_amounts())
 
     def _find_style(self, commodity: str) -> AmountStyle:
         """Find the AmountStyle used for a given commodity in this transaction."""
@@ -248,6 +262,28 @@ class Transaction:
                 if amount.commodity == commodity:
                     return amount.style
         return AmountStyle()
+
+
+def format_transactions_total(transactions: list[Transaction]) -> str:
+    """Format the summed positive total across *transactions* for display.
+
+    Aggregates each transaction's positive amounts per commodity (the same
+    value shown in the Amount column), so the result is the column's sum.
+
+    Args:
+        transactions: The transactions to total.
+
+    Returns:
+        The formatted total, or an empty string when there is nothing to sum.
+    """
+    totals: dict[str, Decimal] = {}
+    styles: dict[str, AmountStyle] = {}
+    for txn in transactions:
+        amounts, txn_styles = txn._positive_amounts()
+        for commodity, qty in amounts.items():
+            totals[commodity] = totals.get(commodity, Decimal(0)) + qty
+            styles.setdefault(commodity, txn_styles[commodity])
+    return _format_positive_totals(totals, styles)
 
 
 @dataclass

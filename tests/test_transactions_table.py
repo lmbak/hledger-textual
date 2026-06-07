@@ -58,6 +58,19 @@ def empty_table_journal(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def single_txn_journal(tmp_path: Path) -> Path:
+    """A journal with exactly one current-month transaction."""
+    d = date.today().isoformat()
+    journal = tmp_path / "single.journal"
+    journal.write_text(
+        f"{d} * Grocery shopping\n"
+        "    expenses:food              €40.80\n"
+        "    assets:bank:checking\n"
+    )
+    return journal
+
+
+@pytest.fixture
 def multi_month_journal(tmp_path: Path) -> Path:
     """A journal with transactions in the current and previous month."""
     today = date.today()
@@ -116,7 +129,7 @@ class TestTransactionsTableMount:
         async with app.run_test() as pilot:
             await pilot.pause(delay=1.0)
             table = app.query_one("#transactions-table")
-            assert table.row_count == 2
+            assert table.row_count == 3  # 2 txns + total row
 
     async def test_period_nav_visible(self, table_journal: Path):
         """Month navigation bar is visible (not pinned)."""
@@ -220,7 +233,7 @@ class TestTransactionsTableSearch:
             assert result is True
             await pilot.pause(delay=1.0)
             table = app.query_one("#transactions-table")
-            assert table.row_count == 2  # all current-month txns restored
+            assert table.row_count == 3  # 2 current-month txns + total row
 
     async def test_dismiss_filter_returns_false_when_hidden(
         self, table_journal: Path
@@ -431,6 +444,49 @@ class TestTransactionsTableStatusToggle:
             # Should not crash; table stays empty
             table = app.query_one("#transactions-table")
             assert table.row_count == 0
+
+
+@pytest.mark.skipif(not has_hledger(), reason="hledger not installed")
+class TestTransactionsTableTotalRow:
+    """Tests for the summed total footer row."""
+
+    async def test_total_row_present_and_sums_amount(self, table_journal: Path):
+        """A bold total row footers the list and sums the Amount column."""
+        app = _TableApp(table_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=1.0)
+            table = app.query_one("#transactions-table")
+            keys = {rk.value for rk in table.rows}
+            assert "__total__" in keys
+            # €40.80 (groceries) + €3000.00 (salary) = €3040.80
+            amount_cell = table.get_row("__total__")[5]
+            assert amount_cell.plain.startswith("€3")
+            assert "040.80" in amount_cell.plain
+
+    async def test_total_row_not_selectable_as_transaction(
+        self, table_journal: Path
+    ):
+        """Landing the cursor on the total row selects no transaction."""
+        app = _TableApp(table_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=1.0)
+            txn_table = app.query_one(TransactionsTable)
+            table = app.query_one("#transactions-table")
+            table.move_cursor(row=table.row_count - 1)  # the total row
+            await pilot.pause()
+            assert txn_table.get_selected_transaction() is None
+
+    async def test_no_total_row_for_single_transaction(
+        self, single_txn_journal: Path
+    ):
+        """A single transaction needs no total; the footer is suppressed."""
+        app = _TableApp(single_txn_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=1.0)
+            table = app.query_one("#transactions-table")
+            assert table.row_count == 1
+            keys = {rk.value for rk in table.rows}
+            assert "__total__" not in keys
 
 
 class TestTransactionsTableLoadErrors:
