@@ -997,7 +997,13 @@ class ReportsPane(DataTablePaneMixin, Widget):
         rows: list[list[str]] = []
 
         for row in data.rows:
-            cells = [row.account]
+            # Mirror the on-screen tree indentation so exports keep the
+            # hierarchy; section headers and totals stay flush left.
+            if row.is_section_header or row.is_total:
+                account = row.account
+            else:
+                account = TREE_INDENT * row.depth + row.account
+            cells = [account]
             cells.extend(row.amounts)
             while len(cells) < len(headers):
                 cells.append("")

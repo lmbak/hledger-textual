@@ -837,6 +837,38 @@ def _chapters_data() -> ReportData:
     )
 
 
+class TestReportsPaneExport:
+    """Tests for ReportsPane.get_export_data."""
+
+    async def test_export_indents_accounts_by_depth(
+        self, reports_journal: Path, monkeypatch
+    ):
+        """Exported account names keep the on-screen tree indentation."""
+        monkeypatch.setattr(
+            "hledger_textual.widgets.reports_pane.load_report",
+            lambda *args, **kwargs: _chapters_data(),
+        )
+        app = _ReportsApp(reports_journal)
+        async with app.run_test() as pilot:
+            await pilot.pause(delay=0.5)
+            pane = app.query_one(ReportsPane)
+            pane._tree_mode = True
+            pane.focus()
+            await pilot.press("r")
+            await pilot.pause(delay=0.5)
+
+            export = pane.get_export_data()
+            accounts = [row[0] for row in export.rows]
+            # Section header and total stay flush left; data rows indent by
+            # two spaces per depth level.
+            assert "Expenses" in accounts
+            assert "expenses" in accounts  # depth-0 root
+            assert "  food" in accounts  # depth 1
+            assert "    groceries" in accounts  # depth 2
+            assert "  transport" in accounts
+            assert "Net:" in accounts
+
+
 class TestReportsPaneChapterRules:
     """Tests for chapter rules and the cursor-row highlight (ReportsDataTable)."""
 
